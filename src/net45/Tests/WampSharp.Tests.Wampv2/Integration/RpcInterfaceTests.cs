@@ -181,7 +181,10 @@ namespace WampSharp.Tests.Wampv2.Integration
             mAppliance = new Teapot(mCallback);
         }
 
-        public IApplianceSubService appliance => mAppliance;
+        public IApplianceSubService appliance
+        {
+            get { return mAppliance; }
+        }
 
         public string version()
         {
