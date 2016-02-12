@@ -1,4 +1,7 @@
 using System.Reflection;
+#if !PCL
+using Castle.Core.Internal;
+#endif
 using WampSharp.V2.Core.Contracts;
 using WampSharp.V2.Rpc;
 
@@ -17,24 +20,27 @@ namespace WampSharp.V2
             mRegisterOptions = registerOptions;
         }
 
-        public virtual bool IsCalleeProcedure(MethodInfo method)
+        public bool IsCalleeMember(MemberInfo member)
         {
-            return method.IsDefined(typeof (WampProcedureAttribute));
+            return member.IsDefined(typeof(WampMemberAttributeBase));
         }
 
-        public virtual RegisterOptions GetRegisterOptions(MethodInfo method)
+        public virtual RegisterOptions GetRegisterOptions(MemberInfo member)
         {
             RegisterOptions result = new RegisterOptions(mRegisterOptions);
 
             return result;
         }
 
-        public virtual string GetProcedureUri(MethodInfo method)
+        public virtual string GetProcedureUri(MemberInfo member)
         {
-            WampProcedureAttribute attribute =
-                method.GetCustomAttribute<WampProcedureAttribute>();
+            WampMemberAttributeBase attribute =
+                member.GetCustomAttribute<WampMemberAttributeBase>();
 
-            return attribute.Procedure;
+            if (!string.IsNullOrEmpty(attribute.Procedure))
+                return attribute.Procedure;
+
+            return member.Name;
         }
     }
 }

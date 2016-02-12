@@ -11,17 +11,15 @@ namespace WampSharp.V2.Rpc
 {
     internal class OperationExtractor : IOperationExtractor
     {
-        public IEnumerable<OperationToRegister> ExtractOperations(object instance, ICalleeRegistrationInterceptor interceptor)
+        public IEnumerable<OperationToRegister> ExtractOperations(Type serviceType, Func<object> instance, ICalleeRegistrationInterceptor interceptor)
         {
-            Type type = instance.GetType();
-            IEnumerable<Type> typesToExplore = GetTypesToExplore(type);
+            IEnumerable<Type> typesToExplore = GetTypesToExplore(serviceType);
 
             foreach (Type currentType in typesToExplore)
             {
-                IEnumerable<OperationToRegister> currentOperations =
-                    GetServiceMethodsOfType(instance, currentType, interceptor);
+                IEnumerable<OperationToRegister> currentMemberOperations = GetServiceMembersOfType(instance, currentType, interceptor);
 
-                foreach (OperationToRegister operation in currentOperations)
+                foreach (OperationToRegister operation in currentMemberOperations)
                 {
                     yield return operation;
                 }
@@ -38,30 +36,54 @@ namespace WampSharp.V2.Rpc
             }
         }
 
-        private IEnumerable<OperationToRegister> GetServiceMethodsOfType
-            (object instance,
-                Type type,
-                ICalleeRegistrationInterceptor interceptor)
+        private IEnumerable<OperationToRegister> GetServiceMembersOfType
+           (Func<object> instance,
+               Type type,
+               ICalleeRegistrationInterceptor interceptor)
         {
-            foreach (var method in type.GetPublicInstanceMethods())
+            foreach (var member in type.GetPublicInstanceMembers())
             {
-                if (interceptor.IsCalleeProcedure(method))
+                if (interceptor.IsCalleeMember(member))
                 {
-                    IWampRpcOperation operation = CreateRpcMethod(instance, interceptor, method);
-                    RegisterOptions options = interceptor.GetRegisterOptions(method);
+                    IWampRpcOperation operation = CreateRpcMethod(instance, interceptor, member);
+                    RegisterOptions options = interceptor.GetRegisterOptions(member);
 
                     yield return new OperationToRegister(operation, options);
                 }
             }
         }
 
-        private bool HasServiceMethodsInType
+        private IWampRpcOperation CreateRpcMethod(Func<object> instanceProvider, ICalleeRegistrationInterceptor interceptor, MemberInfo member)
+        {
+
+#if !PCL
+            if (member.MemberType == MemberTypes.Method)
+            {
+                return CreateRpcMethod(instanceProvider, interceptor, member as MethodInfo);
+            }
+            else if (member.MemberType == MemberTypes.Property)
+            {
+                //Use getter method of a property
+                PropertyInfo propertyInfo = member as PropertyInfo;
+
+                if (propertyInfo.GetGetMethod() != null)
+                    return CreateRpcMethod(instanceProvider, interceptor, propertyInfo.GetGetMethod(), member);
+                else
+                    throw new Exception(string.Format("Getter not found for {1}", member.MemberType, member));
+            }
+            throw new Exception(string.Format("Unsupported member type {0} found when registering {1}", member.MemberType, member));
+#else
+            return CreateRpcMethod(instanceProvider, interceptor, member as MethodInfo);
+#endif
+        }
+
+        private bool HasServiceMembersInType
             (Type type,
                 ICalleeRegistrationInterceptor interceptor)
         {
             foreach (var method in type.GetPublicInstanceMethods())
             {
-                if (interceptor.IsCalleeProcedure(method))
+                if (interceptor.IsCalleeMember(method))
                 {
                     return true;
                 }
@@ -70,20 +92,26 @@ namespace WampSharp.V2.Rpc
             return false;
         }
 
-        protected IWampRpcOperation CreateRpcMethod(object instance, ICalleeRegistrationInterceptor interceptor, MethodInfo method)
+        //When procedure URI attribute is defined on method itself, not "parent" memember
+        protected IWampRpcOperation CreateRpcMethod(Func<object> instanceProvider,
+            ICalleeRegistrationInterceptor interceptor, MethodInfo method)
+        {
+            return CreateRpcMethod(instanceProvider, interceptor, method, method);
+        }
+
+        protected IWampRpcOperation CreateRpcMethod(Func<object> instanceProvider, ICalleeRegistrationInterceptor interceptor, MethodInfo method, MemberInfo procedureUriSource)
         {
             string procedureUri =
-                interceptor.GetProcedureUri(method);
+                interceptor.GetProcedureUri(procedureUriSource);
 
             //TODO: need better detection of nested
-            if (HasServiceMethodsInType(method.ReturnType, interceptor) && method.GetParameters().Length == 0)
+            if (HasServiceMembersInType(method.ReturnType, interceptor) && method.GetParameters().Length == 0)
             {
-                var memberInstance = method.Invoke(instance, parameters: new object[] {});
-                return new LocalRpcInterfaceOperation(memberInstance, procedureUri, interceptor);
+                return new LocalRpcInterfaceOperation(method.ReturnType, () => method.Invoke(instanceProvider(), new object[]{}), procedureUri, interceptor);
             }
             else if (!typeof (Task).IsAssignableFrom(method.ReturnType))
             {
-                return new SyncMethodInfoRpcOperation(instance, method, procedureUri);
+                return new SyncMethodInfoRpcOperation(instanceProvider, method, procedureUri);
             }
             else
             {
@@ -91,19 +119,19 @@ namespace WampSharp.V2.Rpc
                 if (method.IsDefined(typeof (WampProgressiveResultProcedureAttribute)))
                 {
                     MethodInfoValidation.ValidateProgressiveMethod(method);
-                    return CreateProgressiveOperation(instance, method, procedureUri);
+                    return CreateProgressiveOperation(instanceProvider, method, procedureUri);
                 }
                 else
 #endif
                 {
                     MethodInfoValidation.ValidateAsyncMethod(method);
-                    return new AsyncMethodInfoRpcOperation(instance, method, procedureUri);
+                    return new AsyncMethodInfoRpcOperation(instanceProvider, method, procedureUri);
                 }
             }
         }
 
 #if !NET40
-        private static IWampRpcOperation CreateProgressiveOperation(object instance, MethodInfo method, string procedureUri)
+        private static IWampRpcOperation CreateProgressiveOperation(Func<object> instanceProvider, MethodInfo method, string procedureUri)
         {
             //return new ProgressiveAsyncMethodInfoRpcOperation<returnType>
             // (instance, method, procedureUri);
@@ -117,7 +145,7 @@ namespace WampSharp.V2.Rpc
 
             IWampRpcOperation operation =
                 (IWampRpcOperation) Activator.CreateInstance(operationType,
-                    instance,
+                    instanceProvider,
                     method,
                     procedureUri);
 

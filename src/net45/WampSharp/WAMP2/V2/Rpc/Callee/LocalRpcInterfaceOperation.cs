@@ -4,7 +4,9 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
+#if !PCL
 using Castle.Core.Internal;
+#endif
 using WampSharp.Core.Serialization;
 using WampSharp.Logging;
 using WampSharp.V2;
@@ -17,13 +19,13 @@ namespace WampSharp.WAMP2.V2.Rpc.Callee
 {
     public class LocalRpcInterfaceOperation: IWampRpcOperation
     {
-        private readonly object mInstance;
         private readonly string mPrefix;
         private readonly string mPath;
         private readonly ILog mLogger;
         private readonly Dictionary<string, OperationToRegister> mOperationMap =
           new Dictionary<string, OperationToRegister>();
         protected readonly static IWampFormatter<object> ObjectFormatter = WampObjectFormatter.Value;
+        private Func<object> mInstanceProvider;
 
         public LocalRpcInterfaceOperation(object instance, string prefix) :
             this(instance, String.Empty, prefix, CalleeRegistrationInterceptor.Default)
@@ -34,17 +36,31 @@ namespace WampSharp.WAMP2.V2.Rpc.Callee
             this(instance, String.Empty, prefix, interceptor) {
         }
 
-        public LocalRpcInterfaceOperation(object instance, string path, string prefix, ICalleeRegistrationInterceptor interceptor)
+        public LocalRpcInterfaceOperation(object instance, string path, string prefix, ICalleeRegistrationInterceptor interceptor) : this(instance.GetType(), () => instance, path, prefix, interceptor)
         {
-            mInstance = instance;
+
+        }
+
+        public LocalRpcInterfaceOperation(Type type, Func<object> instanceProvider, string prefix,
+            ICalleeRegistrationInterceptor interceptor)
+            : this(type, instanceProvider, String.Empty, prefix, interceptor)
+        {
+            
+        }
+
+        public LocalRpcInterfaceOperation(Type type, Func<object> instanceProvider, string path, string prefix, ICalleeRegistrationInterceptor interceptor)
+        {
+            mInstanceProvider = instanceProvider;
             mPrefix = prefix;
             mPath = path;
-            mLogger = LogProvider.GetLogger(typeof(LocalRpcInterfaceOperation) + "." + (path.IsNullOrEmpty() ? "" : path +".") + prefix);
+            string fullPath = (String.IsNullOrEmpty(path) ? "" : path + ".") + prefix;
+            mLogger = LogProvider.GetLogger(typeof(LocalRpcInterfaceOperation) + "." + fullPath);
 
             OperationExtractor extractor = new OperationExtractor();
 
+            ContextualizingCalleeRegistrationInterceptor contextualizingCalleeRegistrationInterceptor = new ContextualizingCalleeRegistrationInterceptor(interceptor, fullPath);
             IEnumerable<OperationToRegister> operationsToRegister =
-                extractor.ExtractOperations(instance, interceptor);
+                extractor.ExtractOperations(type, instanceProvider, contextualizingCalleeRegistrationInterceptor);
 
             foreach (var operationMapRecord in operationsToRegister)
             {
@@ -76,29 +92,32 @@ namespace WampSharp.WAMP2.V2.Rpc.Callee
             TMessage[] arguments,
             IDictionary<string, TMessage> argumentsKeywords)
         {
-            var procedureTail = details.Procedure.Substring(mPrefix.Length + 1);
+            IWampRpcOperation operation = FindLongestMatch(details.Procedure);
 
-            OperationToRegister record;
-            if (mOperationMap.TryGetValue(procedureTail, out record))
+            if (operation != null)
+                operation.Invoke(caller, formatter, details, arguments, argumentsKeywords);
+            else
             {
-                record.Operation.Invoke(caller, formatter, details, arguments, argumentsKeywords);
-                return;
+                IWampErrorCallback callback = new WampRpcErrorCallback(caller);
+
+                WampRpcRuntimeException wampException =
+                    ConvertExceptionToRuntimeException(new NotSupportedException("Method not supported " + details.Procedure));
+                callback.Error(wampException);
             }
-            else if (procedureTail.Contains('.'))
+        }
+
+        private IWampRpcOperation FindLongestMatch(string procedure)
+        {
+            while (procedure.Length > mPrefix.Length)
             {
-                var propertyName = procedureTail.Substring(0, procedureTail.IndexOf('.'));
-                if (mOperationMap.TryGetValue(propertyName, out record))
+                OperationToRegister record;
+                if (mOperationMap.TryGetValue(procedure, out record))
                 {
-                    InvocationDetails childDetails = (InvocationDetails)Activator.CreateInstance(details.GetType(), new object[] {details});
-                    childDetails.Procedure = procedureTail;
-                    record.Operation.Invoke(caller, formatter, childDetails, arguments, argumentsKeywords);
-                    return;
+                    return record.Operation;
                 }
+                procedure = procedure.Substring(0, procedure.LastIndexOf('.'));
             }
-
-            IWampErrorCallback callback = new WampRpcErrorCallback(caller);
-            WampRpcRuntimeException wampException = ConvertExceptionToRuntimeException(new NotSupportedException("Method not supported " + procedureTail));
-            callback.Error(wampException);
+            return null;
         }
 
         protected static WampRpcRuntimeException ConvertExceptionToRuntimeException(Exception exception)
@@ -133,6 +152,37 @@ namespace WampSharp.WAMP2.V2.Rpc.Callee
         public string Procedure
         {
             get { return mPrefix; }
+        }
+
+        protected class ContextualizingCalleeRegistrationInterceptor: ICalleeRegistrationInterceptor
+        {
+            private readonly ICalleeRegistrationInterceptor mOuterInterceptor;
+            private readonly string mPath;
+
+            public ContextualizingCalleeRegistrationInterceptor(ICalleeRegistrationInterceptor outerInterceptor, string path)
+            {
+                if (outerInterceptor is ContextualizingCalleeRegistrationInterceptor)
+                    mOuterInterceptor =
+                        (outerInterceptor as ContextualizingCalleeRegistrationInterceptor).mOuterInterceptor;
+                else
+                    mOuterInterceptor = outerInterceptor;
+                mPath = path;
+            }
+
+            public bool IsCalleeMember(MemberInfo member)
+            {
+                return mOuterInterceptor.IsCalleeMember(member);
+            }
+
+            public RegisterOptions GetRegisterOptions(MemberInfo method)
+            {
+                return mOuterInterceptor.GetRegisterOptions(method);
+            }
+
+            public string GetProcedureUri(MemberInfo method)
+            {
+                return (String.IsNullOrEmpty(mPath) ? "" : mPath + ".") + mOuterInterceptor.GetProcedureUri(method);
+            }
         }
     }
 }
