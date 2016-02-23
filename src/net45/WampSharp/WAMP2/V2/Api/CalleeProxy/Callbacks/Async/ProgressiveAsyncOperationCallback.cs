@@ -1,7 +1,6 @@
-#if !NET40
-
 using System;
 using WampSharp.V2.Core.Contracts;
+using WampSharp.V2.Rpc;
 
 namespace WampSharp.V2.CalleeProxy
 {
@@ -29,5 +28,3 @@ namespace WampSharp.V2.CalleeProxy
         }
     }
 }
-
-#endif

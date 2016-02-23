@@ -1,10 +1,10 @@
 #if CASTLE
-#if !NET40
 using System;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using Castle.DynamicProxy;
+using WampSharp.V2.Rpc;
 
 namespace WampSharp.V2.CalleeProxy
 {
@@ -34,5 +34,4 @@ namespace WampSharp.V2.CalleeProxy
         }
     }
 }
-#endif
 #endif
